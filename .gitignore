@@ -1,0 +1,27 @@
+# 依赖与运行产物
+node_modules/
+*.tgz
+*.zip
+
+# 调研用临时目录（含第三方仓库源码与真实页面快照，不发布）
+_ref/
+dsh-image-gen/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志与临时文件
+*.log
+*.bak
+*.bak-*
+*.tmp
+
+# 压缩后的构建产物（脚本本体是明文发布的）
+*.min.js
+
+# 本地授权取证记录（含第三方仓库审计，不发布）
+LICENSE-NOTICE.md

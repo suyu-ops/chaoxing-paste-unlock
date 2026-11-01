@@ -1,0 +1,13 @@
+{
+  "name": "chaoxing-paste-unlock",
+  "version": "1.4.0",
+  "private": true,
+  "description": "学习通粘贴限制解锁用户脚本",
+  "license": "CC-BY-NC-SA-4.0",
+  "scripts": {
+    "test": "node tests/test-1.4.0.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.3"
+  }
+}

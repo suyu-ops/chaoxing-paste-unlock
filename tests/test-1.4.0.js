@@ -1,0 +1,243 @@
+// 1.4.0 回归测试
+// 核心新逻辑：guardBeforePaste 行为还原 / 零宽字符污染拦截 / CM5 选区快照 / UE ready 队列去重
+const fs = require('fs');
+const path = require('path');
+const { JSDOM } = require('jsdom');
+
+const SRC = fs.readFileSync(path.join(__dirname, '..', '1.4.0_xxt.js'), 'utf8');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+let pass = 0, fail = 0;
+const ok = (n, c, x) => { c ? (pass++, console.log('  PASS', n)) : (fail++, console.log('  FAIL', n, x === undefined ? '' : JSON.stringify(x))); };
+
+function env(html, pre) {
+  const dom = new JSDOM(html || '<!doctype html><html><body></body></html>', {
+    url: 'https://mooc1.chaoxing.com/mooc-ans/work',
+    runScripts: 'outside-only', pretendToBeVisual: true
+  });
+  const w = dom.window;
+  w.console.log = () => {};
+  if (pre) pre(w);
+  w.eval(SRC);
+  return w;
+}
+const ev = (w, data) => {
+  const e = new w.Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(e, 'clipboardData', { value: data, configurable: true });
+  return e;
+};
+const cd = (o) => ({
+  items: o.items || [], files: o.files || [], types: o.types || ['text/plain'],
+  getData: (t) => (o[t] === undefined ? '' : o[t])
+});
+
+(async () => {
+  console.log('\n[A] 零宽字符判据');
+  {
+    ok("'\\u200b'.trim() 不是空（证明旧判据失效）", '\u200b'.trim() !== '');
+    const w = env(null, (win) => {
+      win.__calls = [];
+      win.navigator.clipboard = { writeText(t) { win.__calls.push(t); return Promise.resolve(); } };
+    });
+    await sleep(50);
+    // 触发粘贴窗口
+    w.document.dispatchEvent(ev(w, cd({ 'text/plain': 'x' })));
+    w.navigator.clipboard.writeText('\u200b\u200b');
+    w.navigator.clipboard.writeText('\u2060');
+    w.navigator.clipboard.writeText('正常文本');
+    await sleep(30);
+    const got = w.__calls;
+    ok('零宽 U+200B 被拦', got.indexOf('\u200b\u200b') === -1, got);
+    ok('零宽 U+2060 被拦', got.indexOf('\u2060') === -1, got);
+    ok('正常文本放行', got.indexOf('正常文本') >= 0, got);
+  }
+
+  console.log('\n[B] guardBeforePaste：行为还原（不靠源码文案）');
+  {
+    const w = env();
+    const d = w.document;
+    const iframe = d.createElement('iframe');
+    d.body.appendChild(iframe);
+    const idoc = iframe.contentDocument;
+
+    // 站点监听器：不含 MARK、也不含 html.html="" 字面量（写的是 null），但仍清空内容
+    const sneakyBlocker = function (html) {
+      html.html = null;        // 行为拦截（UE: if (!html.html) return）
+      return false;
+    };
+    // 正常监听器：读一下就返回，不清空
+    const normalListener = function (html) { html.html = html.html + ''; return undefined; };
+
+    const editor = {
+      key: 'e1', isReady: true, iframe, body: idoc.body,
+      options: { enterTag: 'p' },
+      __allListeners: { beforepaste: [] },
+      execCommand(name, html) { idoc.body.insertAdjacentHTML('beforeend', html); },
+      fireEvent() {},
+      focus() {},
+      ready(cb) { cb(); },
+      addListener(t, fn) { (this.__allListeners[t] = this.__allListeners[t] || []).push(fn); }
+    };
+    editor.__allListeners.beforepaste.push(sneakyBlocker, normalListener);
+
+    w.UE = { instants: { e1: editor }, Editor: { prototype: { addListener: function () {} } } };
+    await sleep(900);   // 等 ticker 扫到并 guardEditor
+
+    ok('数组长度未被改变（不用 splice 删除）', editor.__allListeners.beforepaste.length === 2,
+      editor.__allListeners.beforepaste.length);
+    ok('认不出的监听器被包了一层', editor.__allListeners.beforepaste[0].__xxtGuard === true,
+      typeof editor.__allListeners.beforepaste[0]);
+
+    // 手动模拟 UE 的 fireEvent('beforepaste', html)
+    const html = { html: '<p>用户粘贴的内容</p>' };
+    const list = editor.__allListeners.beforepaste;
+    for (let k = list.length - 1; k >= 0; k--) {
+      if (!list[k]) continue;
+      list[k].call(editor, html, null);
+    }
+    ok('被清空的 html.html 被还原', html.html === '<p>用户粘贴的内容</p>', html.html);
+    ok('正常监听器没被误伤', typeof list[1] === 'function' && list[1].__xxtGuard === true);
+  }
+
+  console.log('\n[C] addListener 路径：认得出就丢，认不出就包行为兜底');
+  {
+    const got = [];
+    const w = env(null, (win) => {
+      win.UE = { instants: {}, Editor: { prototype: { addListener: function (t, fn) { got.push({ t, fn }); } } } };
+    });
+    await sleep(900);
+    const proto = w.UE.Editor.prototype;
+    ok('addListener 已包裹', proto.addListener.__xxt === true);
+
+    // 认得出（含 MARK）：直接丢
+    proto.addListener('beforepaste', function (h) { /* 只能录入不能粘贴 */ h.html = ''; });
+    ok('含 MARK 的监听器被丢弃', got.length === 0, got.length);
+
+    // 认不出：包一层
+    const unknown = function (h) { h.html = ''; };
+    proto.addListener('beforepaste', unknown);
+    ok('认不出的监听器被放行（但已包）', got.length === 1 && got[0].fn !== unknown && got[0].fn.__xxtGuard === true);
+    const h = { html: 'abc' };
+    got[0].fn(h);
+    ok('包过后行为被还原', h.html === 'abc', h.html);
+
+    // 非 beforepaste 的任何监听器都不动
+    const plain = function () {};
+    proto.addListener('contentChange', plain);
+    ok('其它事件不包装', got[1].fn === plain);
+  }
+
+  console.log('\n[D] CM5：选区快照 + 只在文档没变时补插');
+  {
+    const w = env('<!doctype html><html><body><div class="CodeMirror" id="cmw"></div></body></html>');
+    const wrap = w.document.getElementById('cmw');
+    const handlers = [];
+    let value = 'ABCDEF', replaced = null, focused = false;
+    const cm = {
+      getWrapperElement() { return wrap; },
+      getCursor(which) { return which === 'from' ? { line: 0, ch: 2 } : { line: 0, ch: 4 }; },
+      getValue() { return value; },
+      replaceRange(t, f, to, origin) { replaced = { t, f, to, origin }; value = t.join ? t.join('') : t; },
+      focus() { focused = true; },
+      on(name, fn) { if (name === 'beforeChange') handlers.push(fn); }
+    };
+    wrap.CodeMirror = cm;
+    await sleep(900);
+    ok('beforeChange 已注册', handlers.length === 1);
+
+    // 真粘贴：捕获阶段记录快照
+    wrap.dispatchEvent(ev(w, cd({ types: ['text/plain'], 'text/plain': 'XYZ' })));
+    ok('捕获到选区 from', cm.__xxtFrom && cm.__xxtFrom.ch === 2, cm.__xxtFrom);
+    ok('捕获到选区 to', cm.__xxtTo && cm.__xxtTo.ch === 4, cm.__xxtTo);
+    ok('捕获到改动前文档', cm.__xxtBase === 'ABCDEF', cm.__xxtBase);
+
+    // 站点 cancel 掉了：我们复活
+    const change = {
+      origin: 'paste', from: { line: 0, ch: 9 }, to: { line: 0, ch: 9 },   // 故意给错位置
+      text: ['XYZ'], canceled: false,
+      cancel() { this.canceled = true; },
+      update(f, t, txt) { if (txt) this.text = txt; }
+    };
+    change.cancel();
+    handlers[0](cm, change);
+    ok('change 被复活', change.canceled === false);
+
+    // 模拟 CM 没插进去（文档没变）
+    await sleep(40);
+    ok('文档没变时用快照位置补插', replaced && replaced.f.ch === 2 && replaced.to.ch === 4, replaced);
+    ok('补插 origin=+input', replaced && replaced.origin === '+input', replaced && replaced.origin);
+    ok('补插后 focus', focused === true);
+  }
+
+  console.log('\n[E] CM5：文档已变（CM 自己插了）则不重复插');
+  {
+    const w = env('<!doctype html><html><body><div class="CodeMirror" id="cmw"></div></body></html>');
+    const wrap = w.document.getElementById('cmw');
+    const handlers = [];
+    let value = 'OLD', replaceCount = 0;
+    const cm = {
+      getWrapperElement() { return wrap; },
+      getCursor() { return { line: 0, ch: 0 }; },
+      getValue() { return value; },
+      replaceRange(t) { replaceCount++; value += t; },
+      focus() {},
+      on(n, fn) { if (n === 'beforeChange') handlers.push(fn); }
+    };
+    wrap.CodeMirror = cm;
+    await sleep(900);
+
+    wrap.dispatchEvent(ev(w, cd({ types: ['text/plain'], 'text/plain': 'NEW' })));
+    const change = { origin: 'paste', from: { line: 0, ch: 0 }, to: { line: 0, ch: 0 }, text: ['NEW'], canceled: false, cancel() {}, update() {} };
+    handlers[0](cm, change);
+    value = 'NEWOLD';                    // CM 自己插成功
+    await sleep(40);
+    ok('文档已变时不补插', replaceCount === 0, replaceCount);
+  }
+
+  console.log('\n[F] UE ready 队列：连点两次只准备一次回调');
+  {
+    const w = env();
+    const d = w.document;
+    const iframe = d.createElement('iframe');
+    d.body.appendChild(iframe);
+    const idoc = iframe.contentDocument;
+    let readyCalls = 0, inserts = 0;
+    const editor = {
+      key: 'e1', isReady: false, iframe, body: idoc.body,
+      options: { enterTag: 'p' },
+      execCommand(name, html) { inserts++; idoc.body.insertAdjacentHTML('beforeend', html || ''); },
+      fireEvent() {}, focus() {},
+      ready(cb) { readyCalls++; this.__cb = cb; }
+    };
+    w.UE = { instants: { e1: editor }, Editor: { prototype: {} } };
+    await sleep(900);
+
+    // 直接调用内部插入路径不可达，改为通过粘贴兜底触发两次
+    idoc.body.dispatchEvent(ev(w, cd({ types: ['text/plain'], 'text/plain': 'x' })));
+    idoc.body.dispatchEvent(ev(w, cd({ types: ['text/plain'], 'text/plain': 'y' })));
+    await sleep(80);
+    ok('ready 只注册一次', readyCalls === 1, readyCalls);
+    editor.isReady = true;
+    if (editor.__cb) editor.__cb();
+    await sleep(30);
+    ok('ready 后把队列里两条都插了', inserts === 2, inserts);
+  }
+
+  console.log('\n[G] 幂等 & 内联 on* 无副作用');
+  {
+    const w = env('<!doctype html><html><body onpaste="return false"><div></div></body></html>');
+    await sleep(60);
+    ok('版本标记 1.4.0', w.__xxtPasteUnlock === '1.4.0');
+    ok('body.onpaste 被清', w.document.body.onpaste === null);
+    // 没有 on* 的元素不应被写入属性
+    const div = w.document.querySelector('div');
+    div.onclick = null;
+    ok('无 on* 的目标保持 null 不新增', div.onpaste === null);
+    let threw = null;
+    try { w.eval(SRC); } catch (e) { threw = e; }
+    ok('二次执行不抛错', threw === null, threw && threw.message);
+  }
+
+  console.log(`\n结果: ${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();
