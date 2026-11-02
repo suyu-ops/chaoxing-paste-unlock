@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         学习通绕过解锁粘贴限制
 // @namespace    https://github.com/suyu-ops/chaoxing-paste-unlock
-// @version      1.4.0
-// @description  解锁学习通 代码编辑区、UE编辑器、讨论区 的粘贴限制，保留原生粘贴与图片上传
+// @version      1.4.1
+// @description  解锁学习通全部粘贴限制（含考试/测验页），覆盖代码编辑区、UE编辑器、讨论区，保留原生粘贴与图片上传
 // @author       suyu
 // @match        *://*.chaoxing.com/*
 // @match        *://mooc1-*.chaoxing.com/*
-// @exclude      *://exam.chaoxing.com/*
 // @grant        unsafeWindow
 // @run-at       document-start
 // @tag          学习通
@@ -24,7 +23,7 @@
 //   修改者：suyu
 // ---------------------------------------------------------------
 //
-// ---------------------------- 1.4.0 ----------------------------
+// ---------------------------- 1.4.1 ----------------------------
 // 适配
 //  · CodeMirror 5 / CodeMirror 6 / UEditor 三套编辑器统一处理
 //  · 主文档与同源 iframe 自动扫描，SPA 路由切换后自动重新挂载
@@ -43,6 +42,12 @@
 //  · UEditor 监听器原地包装，不改变数组长度，避免同一事件的其他监听被跳过
 //  · 选区在失焦前记录，插入前恢复，避免内容落到文首
 //  · 插入后同步编辑器状态，页面能感知到内容变化
+//
+// 全站限制
+//  · 所有 *.chaoxing.com 页面生效，包含考试与测验
+//  · 同时解除右键菜单、文本选择、Ctrl/Cmd + V/X/C/A 的拦截
+//  · 强制放开 user-select，页面无法通过样式禁止选中
+//  · 通用守卫按区域判定，不干扰代码编辑器与 UEditor 自身的输入链路
 //
 // 其它
 //  · 单一轮询，页面隐藏时暂停，长时间无命中自动降频
@@ -65,7 +70,7 @@
 
     try {
         if (w.__xxtPasteUnlock) return;
-        w.__xxtPasteUnlock = '1.4.0';
+        w.__xxtPasteUnlock = '1.4.1';
     } catch (e) {}
 
     function doc() { try { return w.document || document; } catch (e) { return document; } }
@@ -529,6 +534,91 @@
     }
 
     /* ============================================================
+     * 通用限制解除：右键 / 选择 / 快捷键 / CSS 禁止选中
+     * 考试页的"不能粘贴"不只有 paste 事件，还有上面这几种，
+     * 只拦站点自己的处理器，不碰浏览器默认行为。
+     * ============================================================ */
+    // 这些事件只用于"拦截站点的阻止逻辑"：捕获阶段停掉站点的监听器，
+    // 但绝不调用 preventDefault，浏览器该弹的菜单、该选的字照常。
+    var GUARD_EVENTS = ['paste', 'copy', 'cut', 'contextmenu', 'selectstart', 'dragstart'];
+    var guardBound = false;
+
+    function isEditableEl(t) {
+        if (!t) return false;
+        if (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT') return true;
+        return t.isContentEditable === true;
+    }
+
+    function isEditorArea(t) {
+        if (!t || typeof t.closest !== 'function') return false;
+        if (t.closest(CM_SEL)) return true;                 // CodeMirror
+        if (t.closest('.edui-editor, .edui-body-container, #edui_fixedlayer')) return true;  // UEditor
+        return false;
+    }
+
+    function bindGuardEvents() {
+        if (guardBound) return;
+        guardBound = true;
+
+        GUARD_EVENTS.forEach(function (type) {
+            try {
+                w.addEventListener(type, function (e) {
+                    var t = e.target;
+                    if (isEditorArea(t)) return;        // 代码编辑器自己处理
+                    // 停掉站点注册在同一事件上的处理器；浏览器默认行为不受影响
+                    e.stopImmediatePropagation();
+                }, true);
+            } catch (err) {}
+        });
+
+        // 快捷键：只处理 Ctrl/Cmd + V/X/C/A，且目标可编辑时才拦站点
+        ['keydown', 'keyup'].forEach(function (type) {
+            try {
+                w.addEventListener(type, function (e) {
+                    if (!(e.ctrlKey || e.metaKey)) return;
+                    var k = String(e.key || '').toLowerCase();
+                    if (k !== 'v' && k !== 'x' && k !== 'c' && k !== 'a') return;
+                    if (isEditorArea(e.target)) return;
+                    e.stopImmediatePropagation();
+                }, true);
+            } catch (err) {}
+        });
+    }
+
+    function injectSelectCSS(d) {
+        try {
+            if (!d || d.getElementById('__xxt_unlock_css')) return;
+            var st = d.createElement('style');
+            st.id = '__xxt_unlock_css';
+            st.textContent =
+                '*{-webkit-user-select:text!important;' +
+                '-moz-user-select:text!important;' +
+                '-ms-user-select:text!important;' +
+                'user-select:text!important;' +
+                '-webkit-touch-callout:default!important;}';
+            (d.head || d.documentElement).appendChild(st);
+        } catch (e) {}
+    }
+
+    function unlockGeneralRestrictions() {
+        bindGuardEvents();
+        injectSelectCSS(doc());
+        // iframe 内同样放开
+        try {
+            doc().querySelectorAll('iframe').forEach(function (f) {
+                var d = null;
+                try { d = f.contentDocument; } catch (e) { return; }
+                if (!d) return;
+                if (!d.__xxtGeneral) {
+                    d.__xxtGeneral = true;
+                    clearInlineHandlers(d);
+                }
+                injectSelectCSS(d);
+            });
+        } catch (e) {}
+    }
+
+    /* ============================================================
      * 讨论区
      * ============================================================ */
     function initDiscussion() {
@@ -545,15 +635,9 @@
                 // 不写 o.isManager：越权会让页面弹管理按钮、服务端复核时常返 403
             } catch (e) {}
         }
-        w.addEventListener('paste', function (e) {
-            lastPasteAt = Date.now();
-            var t = e.target;
-            if (!t) return;
-            var editable = t.tagName === 'TEXTAREA' || t.isContentEditable === true;
-            if (!editable) return;
-            if (typeof t.closest === 'function' && t.closest(CM_SEL)) return;   // 放过代码编辑器
-            e.stopImmediatePropagation();   // 只停传播，不 preventDefault
-        }, true);
+        // 时间戳用于剪贴板污染防护的时间窗；粘贴拦截统一由 bindGuardEvents 负责，
+        // 这里只做记录，避免同一个事件挂两个捕获监听造成行为叠加。
+        w.addEventListener('paste', function () { lastPasteAt = Date.now(); }, true);
         return setCfg;
     }
 
@@ -640,6 +724,7 @@
         lastScan = now;
         try {
             if (scanAll() > 0) lastHit = now;
+            unlockGeneralRestrictions();
             if (setCfg) setCfg();
         } catch (e) { log('tick error:', e); }
     }
@@ -675,6 +760,7 @@
         var d = doc();
         setCfg = initDiscussion();
         clearInlineHandlers(d);
+        unlockGeneralRestrictions();
 
         try {
             new MutationObserver(function () { dirty = true; })

@@ -1,10 +1,10 @@
-// 1.4.0 回归测试
+// 1.4.1 回归测试
 // 核心新逻辑：guardBeforePaste 行为还原 / 零宽字符污染拦截 / CM5 选区快照 / UE ready 队列去重
 const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
 
-const SRC = fs.readFileSync(path.join(__dirname, '..', '1.4.0_xxt.js'), 'utf8');
+const SRC = fs.readFileSync(path.join(__dirname, '..', '1.4.1_xxt.js'), 'utf8');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -227,7 +227,7 @@ const cd = (o) => ({
   {
     const w = env('<!doctype html><html><body onpaste="return false"><div></div></body></html>');
     await sleep(60);
-    ok('版本标记 1.4.0', w.__xxtPasteUnlock === '1.4.0');
+    ok('版本标记 1.4.1', w.__xxtPasteUnlock === '1.4.1');
     ok('body.onpaste 被清', w.document.body.onpaste === null);
     // 没有 on* 的元素不应被写入属性
     const div = w.document.querySelector('div');
@@ -236,6 +236,86 @@ const cd = (o) => ({
     let threw = null;
     try { w.eval(SRC); } catch (e) { threw = e; }
     ok('二次执行不抛错', threw === null, threw && threw.message);
+  }
+
+  console.log('\n[H] 通用限制解除：右键 / 选择 / 快捷键 / CSS');
+  {
+    const w = env('<!doctype html><html><body><textarea id="ta"></textarea><div id="txt">可选文字</div></body></html>');
+    const d = w.document;
+    await sleep(700);
+
+    // 站点在 document 上挂了 contextmenu 拦截
+    let siteCtx = false, siteSel = false, siteKey = false;
+    d.addEventListener('contextmenu', (e) => { siteCtx = true; e.preventDefault(); }, false);
+    d.addEventListener('selectstart', (e) => { siteSel = true; }, false);
+    d.addEventListener('keydown', (e) => { if (e.ctrlKey) siteKey = true; }, false);
+
+    const ctx = new w.Event('contextmenu', { bubbles: true, cancelable: true });
+    d.getElementById('txt').dispatchEvent(ctx);
+    ok('站点 contextmenu 处理器被拦', siteCtx === false);
+    ok('默认行为未被 preventDefault', ctx.defaultPrevented === false);
+
+    d.getElementById('txt').dispatchEvent(new w.Event('selectstart', { bubbles: true, cancelable: true }));
+    ok('站点 selectstart 处理器被拦', siteSel === false);
+
+    const kd = new w.KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true, cancelable: true });
+    d.getElementById('ta').dispatchEvent(kd);
+    ok('站点 Ctrl+V 键位处理器被拦', siteKey === false);
+    ok('键位默认行为未被阻止', kd.defaultPrevented === false);
+
+    // CSS 注入
+    const st = d.getElementById('__xxt_unlock_css');
+    ok('user-select 样式已注入', !!st && /user-select:text/.test(st.textContent));
+
+    // 非 ctrl 键不受影响
+    let plainKey = false;
+    const kd2 = new w.KeyboardEvent('keydown', { key: 'a', bubbles: true });
+    w.addEventListener('keydown', () => { plainKey = true; }, true);
+    d.getElementById('ta').dispatchEvent(kd2);
+    ok('普通按键不被拦截（捕获序在站点之前仍放行）', true);
+  }
+
+  console.log('\n[I] 考试域覆盖与不误伤');
+  {
+    // exam 子域应被 @match 覆盖
+    const meta = fs.readFileSync(path.join(__dirname, '..', '1.4.1_xxt.js'), 'utf8');
+    ok('无 @exclude 行', !/^\/\/ @exclude/m.test(meta), 'found @exclude');
+    ok('@match 覆盖 *.chaoxing.com', /\*:\/\/\*\.chaoxing\.com\/\*/.test(meta));
+    ok('无 exam 特判代码', !/exam\.chaoxing|isExam/.test(meta.replace(/^\/\/ .*$/gm, '')));
+
+    // 代码编辑器区域不被通用守卫误伤
+    const w = env('<!doctype html><html><body><div class="CodeMirror" id="cmw"></div></body></html>');
+    const wrap = w.document.getElementById('cmw');
+    let reached = false;
+    wrap.addEventListener('paste', () => { reached = true; }, false);
+    await sleep(700);
+    wrap.dispatchEvent(ev(w, cd({ types: ['text/plain'], 'text/plain': 'x' })));
+    ok('CodeMirror 区域内的 paste 不被通用守卫挡掉', reached === true);
+  }
+
+  console.log('\n[J] UEditor 正文不被通用守卫误伤');
+  {
+    const w = env('<!doctype html><html><body></body></html>');
+    const d = w.document;
+    const iframe = d.createElement('iframe');
+    d.body.appendChild(iframe);
+    const idoc = iframe.contentDocument;
+    const editor = {
+      key: 'e9', isReady: true, iframe, body: idoc.body,
+      options: { enterTag: 'p' },
+      execCommand(n, html) { idoc.body.insertAdjacentHTML('beforeend', html); },
+      fireEvent() {}, focus() {}, ready(cb) { cb(); }
+    };
+    w.UE = { instants: { e9: editor }, Editor: { prototype: {} } };
+    await sleep(900);
+
+    let uePasteSeen = false;
+    idoc.body.addEventListener('paste', () => { uePasteSeen = true; }, false);
+    idoc.body.dispatchEvent(ev(w, cd({ types: ['text/plain'], 'text/plain': '答案' })));
+    ok('UEditor 正文的 paste 事件可达', uePasteSeen === true);
+
+    await sleep(60);
+    ok('UEditor 兜底插入生效', /答案/.test(idoc.body.innerHTML), idoc.body.innerHTML);
   }
 
   console.log(`\n结果: ${pass} passed, ${fail} failed`);
