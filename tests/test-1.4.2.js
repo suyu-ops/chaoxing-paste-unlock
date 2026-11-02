@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
 
-const SRC = fs.readFileSync(path.join(__dirname, '..', '1.4.2_xxt.js'), 'utf8');
+const SRC = fs.readFileSync(path.join(__dirname, '..', 'chaoxing-paste-unlock.user.js'), 'utf8');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -278,7 +278,7 @@ const cd = (o) => ({
   console.log('\n[I] 考试域覆盖与不误伤');
   {
     // exam 子域应被 @match 覆盖
-    const meta = fs.readFileSync(path.join(__dirname, '..', '1.4.2_xxt.js'), 'utf8');
+    const meta = fs.readFileSync(path.join(__dirname, '..', 'chaoxing-paste-unlock.user.js'), 'utf8');
     ok('无 @exclude 行', !/^\/\/ @exclude/m.test(meta), 'found @exclude');
     ok('@match 覆盖 *.chaoxing.com', /\*:\/\/\*\.chaoxing\.com\/\*/.test(meta));
     ok('无 exam 特判代码', !/exam\.chaoxing|isExam/.test(meta.replace(/^\/\/ .*$/gm, '')));

@@ -24,7 +24,9 @@
 ## 安装
 
 1. 安装 [ScriptCat](https://scriptcat.org/) / [Tampermonkey](https://www.tampermonkey.net/) / [Violentmonkey](https://violentmonkey.github.io/)
-2. 打开 `1.4.2_xxt.js`，脚本管理器会接管安装
+2. 打开以下任一地址，脚本管理器会接管安装：
+   - 原始文件：<https://github.com/suyu-ops/chaoxing-paste-unlock/raw/main/chaoxing-paste-unlock.user.js>
+   - 脚本猫：<https://scriptcat.org/zh-CN/script-show-page/8845>
 3. 刷新学习通页面
 
 ## 使用

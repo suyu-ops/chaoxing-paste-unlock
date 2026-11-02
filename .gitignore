@@ -25,3 +25,6 @@ desktop.ini
 
 # 本地授权取证记录（含第三方仓库审计，不发布）
 LICENSE-NOTICE.md
+
+# 临时抓取文件
+sc*.json
