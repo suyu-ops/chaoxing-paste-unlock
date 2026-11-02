@@ -1,10 +1,10 @@
-// 1.4.1 回归测试
+// 1.4.2 回归测试
 // 核心新逻辑：guardBeforePaste 行为还原 / 零宽字符污染拦截 / CM5 选区快照 / UE ready 队列去重
 const fs = require('fs');
 const path = require('path');
 const { JSDOM } = require('jsdom');
 
-const SRC = fs.readFileSync(path.join(__dirname, '..', '1.4.1_xxt.js'), 'utf8');
+const SRC = fs.readFileSync(path.join(__dirname, '..', '1.4.2_xxt.js'), 'utf8');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
@@ -227,7 +227,7 @@ const cd = (o) => ({
   {
     const w = env('<!doctype html><html><body onpaste="return false"><div></div></body></html>');
     await sleep(60);
-    ok('版本标记 1.4.1', w.__xxtPasteUnlock === '1.4.1');
+    ok('版本标记 1.4.2', w.__xxtPasteUnlock === '1.4.2');
     ok('body.onpaste 被清', w.document.body.onpaste === null);
     // 没有 on* 的元素不应被写入属性
     const div = w.document.querySelector('div');
@@ -278,7 +278,7 @@ const cd = (o) => ({
   console.log('\n[I] 考试域覆盖与不误伤');
   {
     // exam 子域应被 @match 覆盖
-    const meta = fs.readFileSync(path.join(__dirname, '..', '1.4.1_xxt.js'), 'utf8');
+    const meta = fs.readFileSync(path.join(__dirname, '..', '1.4.2_xxt.js'), 'utf8');
     ok('无 @exclude 行', !/^\/\/ @exclude/m.test(meta), 'found @exclude');
     ok('@match 覆盖 *.chaoxing.com', /\*:\/\/\*\.chaoxing\.com\/\*/.test(meta));
     ok('无 exam 特判代码', !/exam\.chaoxing|isExam/.test(meta.replace(/^\/\/ .*$/gm, '')));
@@ -316,6 +316,40 @@ const cd = (o) => ({
 
     await sleep(60);
     ok('UEditor 兜底插入生效', /答案/.test(idoc.body.innerHTML), idoc.body.innerHTML);
+  }
+
+  console.log('\n[K] 定制版域名：非学习通页面不介入');
+  {
+    // K1 学校域名 + 无学习通特征 = 应静默退出
+    const dom = new JSDOM('<!doctype html><html><head></head><body><h1>某校教务系统</h1></body></html>', {
+      url: 'https://jw.example.edu.cn/student', runScripts: 'outside-only', pretendToBeVisual: true
+    });
+    const w = dom.window; w.console.log = () => {};
+    w.eval(SRC);
+    await sleep(400);
+    ok('非学习通页面不写入安装标记', !w.__xxtPasteUnlock, w.__xxtPasteUnlock);
+    ok('未注入 user-select 样式', !w.document.getElementById('__xxt_unlock_css'));
+    ok('未改写 editorPaste', w.editorPaste === undefined);
+
+    // K2 学校域名 + 有 UEditor 特征 = 应启用
+    const dom2 = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
+      url: 'https://mooc.some-univ.edu.cn/work', runScripts: 'outside-only', pretendToBeVisual: true
+    });
+    const w2 = dom2.window; w2.console.log = () => {};
+    w2.UEDITOR_CONFIG = { UEDITOR_HOME_URL: '/ueditor/' };
+    w2.eval(SRC);
+    await sleep(700);
+    ok('学习通特征页面启用', w2.__xxtPasteUnlock === '1.4.2', w2.__xxtPasteUnlock);
+    ok('注入 user-select 样式', !!w2.document.getElementById('__xxt_unlock_css'));
+
+    // K3 超星自家域名 = 无需特征，立即启用
+    const dom3 = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
+      url: 'https://exam.chaoxing.com/exam', runScripts: 'outside-only', pretendToBeVisual: true
+    });
+    const w3 = dom3.window; w3.console.log = () => {};
+    w3.eval(SRC);
+    ok('超星域名立即启用', w3.__xxtPasteUnlock === '1.4.2', w3.__xxtPasteUnlock);
+    ok('超星域名立即注入样式', !!w3.document.getElementById('__xxt_unlock_css'));
   }
 
   console.log(`\n结果: ${pass} passed, ${fail} failed`);

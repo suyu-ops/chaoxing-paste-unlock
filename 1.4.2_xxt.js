@@ -1,11 +1,15 @@
 // ==UserScript==
 // @name         学习通绕过解锁粘贴限制
 // @namespace    https://github.com/suyu-ops/chaoxing-paste-unlock
-// @version      1.4.1
-// @description  解锁学习通全部粘贴限制（含考试/测验页），覆盖代码编辑区、UE编辑器、讨论区，保留原生粘贴与图片上传
+// @version      1.4.2
+// @description  解锁学习通全部粘贴限制（含考试/测验与学校定制版），覆盖代码编辑区、UE编辑器、讨论区，保留原生粘贴与图片上传
 // @author       suyu
 // @match        *://*.chaoxing.com/*
 // @match        *://mooc1-*.chaoxing.com/*
+// @match        *://*.edu.cn/*
+// @match        *://*.edu.hk/*
+// @match        *://*.100.com/*
+// @match        *://*.chaoxing.net/*
 // @grant        unsafeWindow
 // @run-at       document-start
 // @tag          学习通
@@ -23,7 +27,7 @@
 //   修改者：suyu
 // ---------------------------------------------------------------
 //
-// ---------------------------- 1.4.1 ----------------------------
+// ---------------------------- 1.4.2 ----------------------------
 // 适配
 //  · CodeMirror 5 / CodeMirror 6 / UEditor 三套编辑器统一处理
 //  · 主文档与同源 iframe 自动扫描，SPA 路由切换后自动重新挂载
@@ -45,6 +49,7 @@
 //
 // 全站限制
 //  · 所有 *.chaoxing.com 页面生效，包含考试与测验
+//  · 支持部署在学校自有域名上的定制版；非学习通页面自动跳过
 //  · 同时解除右键菜单、文本选择、Ctrl/Cmd + V/X/C/A 的拦截
 //  · 强制放开 user-select，页面无法通过样式禁止选中
 //  · 通用守卫按区域判定，不干扰代码编辑器与 UEditor 自身的输入链路
@@ -70,10 +75,48 @@
 
     try {
         if (w.__xxtPasteUnlock) return;
-        w.__xxtPasteUnlock = '1.4.1';
+        w.__xxtPasteUnlock = '1.4.2';
     } catch (e) {}
 
     function doc() { try { return w.document || document; } catch (e) { return document; } }
+
+    /* ============================================================
+     * 站点识别：定制版学习通部署在 *.edu.cn / *.100.com 等学校域名上，
+     * 不能只看域名就动手，必须确认页面确实是学习通再启用。
+     * 命中条件（任一）：
+     *   1. 域名本身属于超星（chaoxing.com / chaoxing.net）
+     *   2. 页面存在超星的特征全局对象或资源路径
+     * 未命中则整个脚本静默退出，不影响学校站点正常功能。
+     * ============================================================ */
+    function isChaoxingHost() {
+        try {
+            var h = String(w.location && w.location.hostname || '').toLowerCase();
+            if (!h) return false;
+            if (/(^|\.)chaoxing\.(com|net)$/.test(h)) return true;
+            return false;
+        } catch (e) { return false; }
+    }
+
+    // 只在非超星域名上做一次特征检测；检测到才继续
+    function detectChaoxingPage() {
+        if (isChaoxingHost()) return true;
+        try {
+            if (w.UE && w.UE.instants) return true;                    // UEditor 实例表
+            if (w.UEDITOR_CONFIG) return true;                          // UEditor 配置
+            if (w.codeEditors && typeof w.codeEditors === 'object') return true;  // 代码题实例表
+            if (typeof w.editorPaste === 'function') return true;       // 作业页注入的粘贴回调
+            var scripts = doc().querySelectorAll('script[src]');
+            for (var i = 0; i < scripts.length; i++) {
+                var src = scripts[i].getAttribute('src') || '';
+                if (/chaoxing|ueditor\.all|codeEditor\.js|star3/i.test(src)) return true;
+            }
+            // 页面内联脚本里出现过超星接口特征
+            var html = '';
+            try { html = doc().documentElement && doc().documentElement.innerHTML || ''; } catch (e) {}
+            if (/ananas\.chaoxing\.com|passport2?\.chaoxing\.com|mooc1?\.chaoxing\.com/i.test(html)) return true;
+        } catch (e) {}
+        return false;
+    }
 
     /* ---------------- toast ---------------- */
     var noticeAt = {};
@@ -731,33 +774,51 @@
 
     function startTimer() { if (!timer) timer = setInterval(tick, 600); }
 
-    /* ---- document-start 立即安装 ---- */
-    try {
-        applyEditorPaste(w.editorPaste);
-        Object.defineProperty(w, 'editorPaste', {
-            configurable: true, enumerable: true,
-            get: function () { return editorPasteRef; },
-            set: applyEditorPaste
-        });
-    } catch (e) {
-        try { w.editorPaste = passthrough; } catch (e2) {}
+    /* ---- 立即安装 ----
+     * 超星自家域名：document-start 就装，赶在页面脚本赋值前拿到 editorPaste
+     * 其它域名（学校定制版）：等 DOM 就绪、确认是学习通再装，避免污染无关站点
+     */
+    function installEarlyHooks() {
+        try {
+            applyEditorPaste(w.editorPaste);
+            Object.defineProperty(w, 'editorPaste', {
+                configurable: true, enumerable: true,
+                get: function () { return editorPasteRef; },
+                set: applyEditorPaste
+            });
+        } catch (e) {
+            try { w.editorPaste = passthrough; } catch (e2) {}
+        }
+
+        patchUeConfig();
+        patchClipboardWrite();
+        injectSelectCSS(doc());     // 尽早放开选择；文档未就绪时 boot 会再试一次
+
+        try {
+            var ueRef = w.UE;
+            Object.defineProperty(w, 'UE', {
+                configurable: true, enumerable: true,
+                get: function () { return ueRef; },
+                set: function (v) { ueRef = v; dirty = true; }
+            });
+        } catch (e) {}
     }
 
-    patchUeConfig();
-    patchClipboardWrite();
-
-    try {
-        var ueRef = w.UE;
-        Object.defineProperty(w, 'UE', {
-            configurable: true, enumerable: true,
-            get: function () { return ueRef; },
-            set: function (v) { ueRef = v; dirty = true; }
-        });
-    } catch (e) {}
+    var EARLY = isChaoxingHost();
+    if (EARLY) installEarlyHooks();
 
     /* ---- 启动 ---- */
     function boot() {
         var d = doc();
+
+        // 非学习通页面（学校定制域名下的其它系统）不介入
+        if (!EARLY && !detectChaoxingPage()) {
+            log('not a chaoxing page, skip');
+            try { delete w.__xxtPasteUnlock; } catch (e) { w.__xxtPasteUnlock = false; }
+            return;
+        }
+        if (!EARLY) { installEarlyHooks(); EARLY = true; }
+
         setCfg = initDiscussion();
         clearInlineHandlers(d);
         unlockGeneralRestrictions();
